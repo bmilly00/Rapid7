@@ -172,7 +172,10 @@ Write-Host '--- Current state ---'
 foreach ($item in $protocolPlan) {
     $subKey  = "$SCHANNEL_KEY\Protocols\$($item.Protocol)\$($item.Side)"
     $enabled = Get-HklmValue -SubKey $subKey -Name 'Enabled'
-    $curText = if ($null -eq $enabled) { 'OS default' } else { '0x{0:X}' -f [uint32]($enabled -band 0xFFFFFFFF) }
+    # 0xFFFFFFFFL: registry DWORDs come back as Int32 (-1 for 0xFFFFFFFF) and a
+    # plain 0xFFFFFFFF literal is itself Int32 -1 in PowerShell, so widen to
+    # Int64 before formatting or the unsigned conversion throws.
+    $curText = if ($null -eq $enabled) { 'OS default' } else { '0x{0:X}' -f ($enabled -band 0xFFFFFFFFL) }
     if ($item.Enable) {
         $ok = ($null -eq $enabled) -or ($enabled -ne 0)
     } else {
