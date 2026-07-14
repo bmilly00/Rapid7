@@ -13,6 +13,8 @@
       * AutoDesk AutoCAD / Advance Steel / Civil 3D (all 180 findings)
       * VNC servers ("VNC remote control service installed", 10 assets)
       * Windows auto-logon ("Windows autologin enabled", 8 assets)
+      * Account lockout policy ("CIFS Account Lockout Policy Allows Password
+        Brute Forcing", 52 assets) - net accounts is never modified
     Those Rapid7 findings will remain open and are handled outside this script.
 
     NEVER REBOOTS: this script performs no machine restart of any kind. Every
@@ -32,51 +34,49 @@
                           MAC ciphers, "no strong ciphers" (up to 67 assets) -
                           SChannel protocol/cipher hardening + cipher-suite
                           order + .NET strong-crypto keys.
-      4  LockoutPolicy    "CIFS Account Lockout Policy Allows Password Brute
-                          Forcing" (52 assets) - local lockout 5/15/15.
-      5  Chrome           All 1195 Google Chrome CVEs - installs the latest
+      4  Chrome           All 1195 Google Chrome CVEs - installs the latest
                           Chrome Enterprise MSI (evergreen link, Google
                           Authenticode verified).
-      6  Edge             All 449 Microsoft Edge CVEs - installs the latest
+      5  Edge             All 449 Microsoft Edge CVEs - installs the latest
                           Edge Stable MSI (Microsoft evergreen link, verified);
                           falls back to kicking the built-in updater.
-      7  AdobeAcrobat     All 397 Adobe Acrobat/Reader CVEs - checks Adobe's
+      6  AdobeAcrobat     All 397 Adobe Acrobat/Reader CVEs - checks Adobe's
                           release notes for the newest Continuous build, then
                           updates via RUM if present, else winget, else the
                           signed update MSP straight from Adobe's servers.
-      8  Office           All 93 Microsoft Office CVEs - triggers a
+      7  Office           All 93 Microsoft Office CVEs - triggers a
                           Click-to-Run update to the latest build.
-      9  AspNetCore       ASP.NET Core CVEs incl. CVE-2025-55315 / the 2026
+      8  AspNetCore       ASP.NET Core CVEs incl. CVE-2025-55315 / the 2026
                           DoS-EoP set (32 assets) - upgrades in-support 8.0/
                           9.0/10.0 Hosting Bundles to the newest build;
                           reports EOL 2.x-7.x ("Obsolete Version", 13 assets).
-      10 SevenZip         All 7-Zip CVEs (10 assets) - winget upgrade, or
+      9  SevenZip         All 7-Zip CVEs (10 assets) - winget upgrade, or
                           downloads the newest x64 build from 7-zip.org.
-      11 VisualStudio     All 9 Visual Studio CVEs - vs_installer updateall.
-      12 StoreApps        Microsoft Notepad CVE-2026-20841 and other Store app
+      10 VisualStudio     All 9 Visual Studio CVEs - vs_installer updateall.
+      11 StoreApps        Microsoft Notepad CVE-2026-20841 and other Store app
                           findings - forces a Store app update scan.
-      13 Java             Oracle Java SE CPU findings (2 assets) - winget
+      12 Java             Oracle Java SE CPU findings (2 assets) - winget
                           upgrade when possible, otherwise reported.
-      14 TeamViewer       TeamViewer CVE-2025-41421 - winget upgrade when
+      13 TeamViewer       TeamViewer CVE-2025-41421 - winget upgrade when
                           possible, otherwise reported.
-      15 InsightAgent     Rapid7 Insight Agent CVEs (2 assets) - bounces the
+      14 InsightAgent     Rapid7 Insight Agent CVEs (2 assets) - bounces the
                           agent service so it self-updates; reports version.
-      16 WindowsUpdate    All 327 "Microsoft Windows" CVEs, .NET Framework
+      15 WindowsUpdate    All 327 "Microsoft Windows" CVEs, .NET Framework
                           CVEs, SQL Server GDRs, Defender etc. - opts the box
                           into Microsoft Update and installs every applicable
                           software update via the Windows Update Agent API.
                           Runs LAST because it is the slowest.
 
       DETECT + REPORT ONLY (exit code 2 so the machine shows as needs-attention)
-      17 MariaDb          11 MariaDB CVEs (2 assets) - unattended in-place
+      16 MariaDb          11 MariaDB CVEs (2 assets) - unattended in-place
                           upgrade of a production DB engine is not safe from a
                           blind script; reports installed version + guidance.
-      18 FortiClient      5 FortiClient CVEs (1 asset) - fixed installers are
+      17 FortiClient      5 FortiClient CVEs (1 asset) - fixed installers are
                           only available signed-in via FortiCare/EMS.
-      19 Log4j            4 Apache Log4j Core CVEs (2 assets) - the jar is
+      18 Log4j            4 Apache Log4j Core CVEs (2 assets) - the jar is
                           embedded in an application; reports every log4j jar
                           found so the app owner can upgrade it.
-      20 SqlServer        SQL Server RCE/EoP CVEs + "Database Open Access" -
+      19 SqlServer        SQL Server RCE/EoP CVEs + "Database Open Access" -
                           GDRs arrive via the WindowsUpdate module once
                           Microsoft Update is opted in; reports instance +
                           exposure guidance.
@@ -98,7 +98,7 @@
     affected by this switch - use the Skip switches to suppress them.)
 
 .PARAMETER SkipWindowsUpdate
-    Skip module 17. Use this when Endpoint Central Patch Management already
+    Skip module 15. Use this when Endpoint Central Patch Management already
     handles OS patching, or to keep run time short.
 
 .PARAMETER SkipTlsHardening
@@ -444,31 +444,7 @@ function Invoke-TlsHardening {
 }
 
 # ==============================================================================
-# 4. Account lockout policy
-# ==============================================================================
-function Invoke-LockoutPolicyFix {
-    $raw = (& "$env:WINDIR\System32\net.exe" accounts) 2>&1 | Out-String
-    $threshold = $null
-    if ($raw -match 'Lockout threshold:\s+(\S+)') { $threshold = $Matches[1] }
-    Write-Log ("Current lockout threshold: {0}" -f $threshold)
-    if ($threshold -and $threshold -ne 'Never') {
-        $tVal = 0; [void][int]::TryParse($threshold, [ref]$tVal)
-        if (($tVal -ge 1) -and ($tVal -le 10)) {
-            Write-Log 'Lockout policy already acceptable (threshold 1-10).'
-            Set-ModuleStatus 'LockoutPolicy' 'OK' ("threshold={0}" -f $tVal)
-            return
-        }
-    }
-    if ($AuditOnly) { Set-ModuleStatus 'LockoutPolicy' 'WOULD-CHANGE' 'set lockout 5/15/15'; return }
-    & "$env:WINDIR\System32\net.exe" accounts /lockoutthreshold:5 /lockoutwindow:15 /lockoutduration:15 | ForEach-Object { Write-Log ("  net accounts: {0}" -f $_) }
-    if ($LASTEXITCODE -ne 0) { throw "net accounts returned exit code $LASTEXITCODE" }
-    Write-Log 'Local lockout policy set to threshold 5 / window 15 min / duration 15 min.'
-    Write-Log 'NOTE: on domain-joined machines the domain policy governs domain accounts - this fixes local-account brute forcing.'
-    Set-ModuleStatus 'LockoutPolicy' 'CHANGED' 'threshold 5 / 15 / 15'
-}
-
-# ==============================================================================
-# 5. Google Chrome
+# 4. Google Chrome
 # ==============================================================================
 function Invoke-ChromeUpdate {
     $exe = @("$env:ProgramFiles\Google\Chrome\Application\chrome.exe",
@@ -501,7 +477,7 @@ function Invoke-ChromeUpdate {
 }
 
 # ==============================================================================
-# 6. Microsoft Edge
+# 5. Microsoft Edge
 # ==============================================================================
 function Invoke-EdgeUpdate {
     $exe = @("${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe",
@@ -550,7 +526,7 @@ function Invoke-EdgeUpdate {
 }
 
 # ==============================================================================
-# 7. Adobe Acrobat / Reader
+# 6. Adobe Acrobat / Reader
 #    Chain: RUM -> winget -> direct signed MSP from Adobe's download server.
 #    (Pilot showed enterprise Acrobat installs may ship without RUM.)
 # ==============================================================================
@@ -701,7 +677,7 @@ function Invoke-AdobeAcrobatUpdate {
 }
 
 # ==============================================================================
-# 8. Microsoft Office (Click-to-Run)
+# 7. Microsoft Office (Click-to-Run)
 # ==============================================================================
 function Invoke-OfficeC2RUpdate {
     $cfg = 'HKLM:\SOFTWARE\Microsoft\Office\ClickToRun\Configuration'
@@ -729,7 +705,7 @@ function Invoke-OfficeC2RUpdate {
 }
 
 # ==============================================================================
-# 9. ASP.NET Core runtimes (incl. CVE-2025-55315 + 2026 CVE set)
+# 8. ASP.NET Core runtimes (incl. CVE-2025-55315 + 2026 CVE set)
 # ==============================================================================
 function Invoke-AspNetCoreUpdate {
     $roots = @()
@@ -792,7 +768,7 @@ function Invoke-AspNetCoreUpdate {
 }
 
 # ==============================================================================
-# 10. 7-Zip
+# 9. 7-Zip
 # ==============================================================================
 function Invoke-SevenZipUpdate {
     $apps = @(Get-InstalledApps | Where-Object { $_.DisplayName -like '7-Zip*' })
@@ -857,7 +833,7 @@ function Invoke-SevenZipUpdate {
 }
 
 # ==============================================================================
-# 11. Visual Studio
+# 10. Visual Studio
 # ==============================================================================
 function Invoke-VisualStudioUpdate {
     $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
@@ -891,7 +867,7 @@ function Invoke-VisualStudioUpdate {
 }
 
 # ==============================================================================
-# 12. Store apps (Notepad CVE-2026-20841 etc.)
+# 11. Store apps (Notepad CVE-2026-20841 etc.)
 # ==============================================================================
 function Invoke-StoreAppsUpdate {
     if ($AuditOnly) { Set-ModuleStatus 'StoreApps' 'WOULD-CHANGE' 'trigger Store update scan'; return }
@@ -907,7 +883,7 @@ function Invoke-StoreAppsUpdate {
 }
 
 # ==============================================================================
-# 13. Oracle Java
+# 12. Oracle Java
 # ==============================================================================
 function Invoke-JavaCheck {
     $java = @(Get-InstalledApps | Where-Object { $_.DisplayName -match '^(Java \d|Java\(TM\)|Oracle Java|Java SE Development Kit|JDK)' })
@@ -932,7 +908,7 @@ function Invoke-JavaCheck {
 }
 
 # ==============================================================================
-# 14. TeamViewer
+# 13. TeamViewer
 # ==============================================================================
 function Invoke-TeamViewerUpdate {
     $tv = @(Get-InstalledApps | Where-Object { $_.DisplayName -like 'TeamViewer*' })
@@ -952,7 +928,7 @@ function Invoke-TeamViewerUpdate {
 }
 
 # ==============================================================================
-# 15. Rapid7 Insight Agent
+# 14. Rapid7 Insight Agent
 # ==============================================================================
 function Invoke-InsightAgentCheck {
     $svc = Get-Service -Name 'ir_agent' -ErrorAction SilentlyContinue
@@ -988,7 +964,7 @@ function Invoke-InsightAgentCheck {
 }
 
 # ==============================================================================
-# 16. Windows Update (Windows / .NET Framework / SQL GDR / Defender)
+# 15. Windows Update (Windows / .NET Framework / SQL GDR / Defender)
 # ==============================================================================
 function Invoke-WindowsUpdateModule {
     if ($SkipWindowsUpdate) {
@@ -1057,7 +1033,7 @@ function Invoke-WindowsUpdateModule {
 }
 
 # ==============================================================================
-# 17. MariaDB (report only)
+# 16. MariaDB (report only)
 # ==============================================================================
 function Invoke-MariaDbCheck {
     $maria = @(Get-InstalledApps | Where-Object { $_.DisplayName -like 'MariaDB*' })
@@ -1075,7 +1051,7 @@ function Invoke-MariaDbCheck {
 }
 
 # ==============================================================================
-# 18. Fortinet FortiClient (report only)
+# 17. Fortinet FortiClient (report only)
 # ==============================================================================
 function Invoke-FortiClientCheck {
     $fc = @(Get-InstalledApps | Where-Object { $_.DisplayName -like 'FortiClient*' })
@@ -1090,7 +1066,7 @@ function Invoke-FortiClientCheck {
 }
 
 # ==============================================================================
-# 19. Apache Log4j Core (report only)
+# 18. Apache Log4j Core (report only)
 # ==============================================================================
 function Invoke-Log4jScan {
     $scanRoots = @($env:ProgramFiles, ${env:ProgramFiles(x86)}, $env:ProgramData, 'C:\inetpub') |
@@ -1111,7 +1087,7 @@ function Invoke-Log4jScan {
 }
 
 # ==============================================================================
-# 20. SQL Server exposure note
+# 19. SQL Server exposure note
 # ==============================================================================
 function Invoke-SqlServerCheck {
     $sql = @(Get-CimInstance -ClassName Win32_Service -ErrorAction SilentlyContinue |
@@ -1136,7 +1112,7 @@ try {
     Write-Log ("Options: AuditOnly={0} NoDownload={1} SkipWindowsUpdate={2} SkipTlsHardening={3} RestartServices={4} SkipModules=[{5}]" -f `
         [bool]$AuditOnly, [bool]$NoDownload, [bool]$SkipWindowsUpdate, [bool]$SkipTlsHardening,
         [bool]$RestartServices, ($SkipModules -join ','))
-    Write-Log 'POLICY: AutoCAD, VNC and Windows auto-logon findings are intentionally EXCLUDED - this script does not touch them.'
+    Write-Log 'POLICY: AutoCAD, VNC, Windows auto-logon and account lockout policy findings are intentionally EXCLUDED - this script does not touch them.'
     Write-Log 'POLICY: this script NEVER reboots the machine - exit code 3010 means a manual reboot is still needed.'
 
     $isAdmin = $false
@@ -1153,7 +1129,6 @@ try {
     Invoke-Module 'CertPadding'   { Invoke-CertPaddingFix }
     Invoke-Module 'SmbSigning'    { Invoke-SmbSigningFix }
     Invoke-Module 'TlsHardening'  { Invoke-TlsHardening }
-    Invoke-Module 'LockoutPolicy' { Invoke-LockoutPolicyFix }
     Invoke-Module 'InsightAgent'  { Invoke-InsightAgentCheck }
     Invoke-Module 'StoreApps'     { Invoke-StoreAppsUpdate }
     Invoke-Module 'Chrome'        { Invoke-ChromeUpdate }

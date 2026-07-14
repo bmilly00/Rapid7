@@ -13,6 +13,8 @@ what they don't have.
 > - **AutoCAD** — all 180 AutoDesk AutoCAD / Advance Steel / Civil 3D findings.
 > - **VNC** — "VNC remote control service installed" (10 assets).
 > - **Auto-logon** — "Windows autologin enabled" (8 assets).
+> - **Account lockout policy** — "CIFS Account Lockout Policy Allows Password
+>   Brute Forcing" (52 assets). `net accounts` is never read or modified.
 >
 > These findings will stay open in Rapid7 and are handled outside this script.
 >
@@ -42,7 +44,6 @@ what they don't have.
 | CVE-2013-3900 WinVerifyTrust (100 assets) | `CertPadding` | `EnableCertPaddingCheck=1` in both registry views |
 | SMBv2 signing not required (48) | `SmbSigning` | `RequireSecuritySignature=1` on the SMB server |
 | TLS/SSL family: BEAST, POODLE, SSLv3, TLS 1.0/1.1, 3DES/SWEET32, RC4, static-key ciphers, weak-MAC ciphers, "no strong ciphers" (up to 67) | `TlsHardening` | SChannel: SSL2/3 + TLS 1.0/1.1 off, TLS 1.2 on, weak ciphers off, MD5 off, DHE ≥ 2048, ECDHE/AEAD-only cipher-suite order, .NET strong-crypto keys |
-| CIFS account lockout allows brute forcing (52) | `LockoutPolicy` | Local policy: threshold 5, window 15 min, duration 15 min |
 | Rapid7 Insight Agent CVEs (2) | `InsightAgent` | Service bounce → agent self-updates from the Insight platform |
 | Oracle Java SE CPU findings (≤2 assets) | `Java` | `winget` upgrade of the JRE where available |
 | TeamViewer CVE-2025-41421 (1) | `TeamViewer` | `winget` upgrade where available |
@@ -78,10 +79,9 @@ what they don't have.
 | `-RestartServices` | Restart the LanmanServer **service** immediately after the SMB signing change (services only — the machine is never rebooted; default waits for your manual reboot). |
 | `-SkipModules A,B` | Skip any modules by name, e.g. `-SkipModules Chrome,Edge,VisualStudio`. |
 
-Module names: `CertPadding, SmbSigning, TlsHardening, LockoutPolicy,
-InsightAgent, StoreApps, Chrome, Edge, AdobeAcrobat, Office, AspNetCore,
-SevenZip, Java, TeamViewer, MariaDb, FortiClient, Log4j, SqlServer,
-VisualStudio, WindowsUpdate`
+Module names: `CertPadding, SmbSigning, TlsHardening, InsightAgent, StoreApps,
+Chrome, Edge, AdobeAcrobat, Office, AspNetCore, SevenZip, Java, TeamViewer,
+MariaDb, FortiClient, Log4j, SqlServer, VisualStudio, WindowsUpdate`
 
 ### Exit codes — set **Specify the exit code(s)** to `0,3010`
 
@@ -108,7 +108,7 @@ VisualStudio, WindowsUpdate`
 | Form field | Value |
 |---|---|
 | **Name** | `Rapid7 - All-In-One Vulnerability Remediation (Jun 2026)` |
-| **Description** | `Remediates the June 2026 Rapid7 export: browser/Adobe/Office/7-Zip/VS/ASP.NET Core updates, TLS-SSL + SMB + lockout + CVE-2013-3900 hardening, Windows Updates. AutoCAD/VNC/autologon excluded. Never reboots (3010 = manual reboot pending). Logs to C:\ProgramData\Rapid7Remediation\.` |
+| **Description** | `Remediates the June 2026 Rapid7 export: browser/Adobe/Office/7-Zip/VS/ASP.NET Core updates, TLS-SSL + SMB + CVE-2013-3900 hardening, Windows Updates. AutoCAD/VNC/autologon/lockout-policy excluded. Never reboots (3010 = manual reboot pending). Logs to C:\ProgramData\Rapid7Remediation\.` |
 | **Execute Script from** | **Repository** |
 | **Script Name** | `Invoke-Rapid7Remediation.ps1` |
 | **Script Argument(s)** | *(blank)* for full run — variants below |
@@ -168,10 +168,8 @@ group is also fine.
   open during the MSP path the patch finishes at reboot (machine exits 3010).
   Dependency-file alternative for `-NoDownload`: ship `AcrobatDCUpd*.msp`
   (unified/64-bit Acrobat) or `AcroRdrDCUpd*.msp` (standalone Reader).
-- The lockout-policy check parses `net accounts` output — English Windows
-  assumed (all current assets are EN).
-- On domain-joined machines, domain GPOs override the local SMB-signing and
-  lockout settings — mirror both in the domain policy for permanence.
+- On domain-joined machines, a domain GPO with a weaker setting overrides the
+  local SMB-signing change — mirror it in the domain policy for permanence.
 - Oracle Java/TeamViewer via `winget` requires the App Installer to be present
   (standard on Win10/11; usually absent on Server SKUs → reported instead).
 
