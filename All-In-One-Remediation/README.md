@@ -32,7 +32,7 @@ what they don't have.
 |---|---|---|
 | Google Chrome CVEs (1,195) | `Chrome` | Latest Chrome Enterprise MSI (evergreen link), Google-signature verified, silent in-place upgrade |
 | Microsoft Edge CVEs (449) | `Edge` | Latest Edge Stable MSI (Microsoft evergreen link), signature verified; falls back to kicking the built-in updater |
-| Adobe Acrobat/Reader CVEs (397) | `AdobeAcrobat` | Adobe **RemoteUpdateManager** applies the newest patch for installed tracks |
+| Adobe Acrobat/Reader CVEs (397) | `AdobeAcrobat` | Compares against Adobe's latest Continuous build, then patches via **RemoteUpdateManager** → **winget** → signed update **MSP** downloaded straight from Adobe (covers enterprise installs deployed without the updater) |
 | Microsoft Windows CVEs (327), .NET Framework (5), Defender, SQL GDRs | `WindowsUpdate` | Opts into **Microsoft Update**, then searches/downloads/installs all applicable software updates via the WUA API (runs last — slowest) |
 | Microsoft Office CVEs (93) | `Office` | Click-to-Run update triggered silently to latest build |
 | ASP.NET Core CVEs incl. CVE-2025-55315 (10 findings / 32 assets) | `AspNetCore` | Latest 8.0 / 9.0 / 10.0 Hosting Bundle in-place upgrade (signature verified) + `iisreset` |
@@ -164,8 +164,10 @@ group is also fine.
 
 - Browser updates finish activating when the user relaunches Chrome/Edge
   (files are staged even while running).
-- Adobe RUM only applies updates when Acrobat/Reader is closed; rerun or let
-  ARM finish overnight if exit-code warnings appear.
+- Adobe updates apply cleanly only when Acrobat/Reader is closed; if it was
+  open during the MSP path the patch finishes at reboot (machine exits 3010).
+  Dependency-file alternative for `-NoDownload`: ship `AcrobatDCUpd*.msp`
+  (unified/64-bit Acrobat) or `AcroRdrDCUpd*.msp` (standalone Reader).
 - The lockout-policy check parses `net accounts` output — English Windows
   assumed (all current assets are EN).
 - On domain-joined machines, domain GPOs override the local SMB-signing and

@@ -40,8 +40,10 @@
       6  Edge             All 449 Microsoft Edge CVEs - installs the latest
                           Edge Stable MSI (Microsoft evergreen link, verified);
                           falls back to kicking the built-in updater.
-      7  AdobeAcrobat     All 397 Adobe Acrobat/Reader CVEs - runs Adobe
-                          RemoteUpdateManager (RUM) to apply the newest patch.
+      7  AdobeAcrobat     All 397 Adobe Acrobat/Reader CVEs - checks Adobe's
+                          release notes for the newest Continuous build, then
+                          updates via RUM if present, else winget, else the
+                          signed update MSP straight from Adobe's servers.
       8  Office           All 93 Microsoft Office CVEs - triggers a
                           Click-to-Run update to the latest build.
       9  AspNetCore       ASP.NET Core CVEs incl. CVE-2025-55315 / the 2026
@@ -549,7 +551,66 @@ function Invoke-EdgeUpdate {
 
 # ==============================================================================
 # 7. Adobe Acrobat / Reader
+#    Chain: RUM -> winget -> direct signed MSP from Adobe's download server.
+#    (Pilot showed enterprise Acrobat installs may ship without RUM.)
 # ==============================================================================
+function Get-AdobeLatestVersion {
+    # Scrapes the DC release-notes index for the newest Continuous-track build.
+    # Returns @{ Ver = [Version]; Str = '26.001.21483' } or $null.
+    if ($NoDownload) { return $null }
+    try {
+        $page = (Invoke-WebRequest -Uri 'https://www.adobe.com/devnet-docs/acrobatetk/tools/ReleaseNotesDC/index.html' -UseBasicParsing).Content
+        $bestV = $null; $bestS = $null
+        # Versions appear as bare "26.001.21691" strings on the index page.
+        foreach ($m in [regex]::Matches($page, '\b(\d{2}\.\d{3}\.\d{5})\b')) {
+            $s = $m.Groups[1].Value
+            $v = [Version]$s
+            if ((-not $bestV) -or ($v -gt $bestV)) { $bestV = $v; $bestS = $s }
+        }
+        if ($bestV) { return @{ Ver = $bestV; Str = $bestS } }
+    } catch {
+        Write-Log ("Could not determine latest Acrobat version from Adobe release notes: {0}" -f $_.Exception.Message) 'WARN'
+    }
+    return $null
+}
+
+function Install-AdobeMsp {
+    # Applies the Continuous-track MSP for one product train. $true on success.
+    param([hashtable]$Train, [hashtable]$Latest)
+    $msp = @(Get-ChildItem -Path $ScriptDir -Filter ("{0}*.msp" -f $Train.MspPrefix) -File -ErrorAction SilentlyContinue) |
+           Sort-Object Name | Select-Object -Last 1
+    if ($msp) {
+        $mspPath = $msp.FullName
+        Write-Log ("Using dependency MSP: {0}" -f $mspPath)
+    } elseif ($NoDownload -or -not $Latest) {
+        Write-Log ("No local {0}*.msp and no download available (NoDownload={1}, latest known={2})." -f $Train.MspPrefix, [bool]$NoDownload, [bool]$Latest) 'WARN'
+        return $false
+    } else {
+        $compact = $Latest.Str -replace '\.', ''
+        $url = ('https://ardownload2.adobe.com/pub/adobe/{0}/win/AcrobatDC/{1}/{2}{1}.msp' -f $Train.UrlPath, $compact, $Train.MspPrefix)
+        $mspPath = Join-Path $env:TEMP ('{0}{1}.msp' -f $Train.MspPrefix, $compact)
+        Write-Log ("Downloading {0} ..." -f $url)
+        try { Invoke-WebRequest -Uri $url -OutFile $mspPath -UseBasicParsing }
+        catch { Write-Log ("MSP download failed: {0}" -f $_.Exception.Message) 'ERROR'; return $false }
+    }
+    if (-not (Test-SignedBy -Path $mspPath -SubjectMatch 'O=Adobe')) {
+        Write-Log ("Authenticode check FAILED for {0} - refusing to execute." -f $mspPath) 'ERROR'
+        return $false
+    }
+    $mspLog = Join-Path $LogDir ('adobe-{0}.log' -f $Train.Name.ToLower())
+    Write-Log ("Applying {0} patch via msiexec /p ..." -f $Train.Name)
+    $p = Start-Process -FilePath 'msiexec.exe' `
+            -ArgumentList '/p', ('"{0}"' -f $mspPath), '/qn', '/norestart', '/l*v', ('"{0}"' -f $mspLog) `
+            -Wait -PassThru
+    Write-Log ("msiexec exit code {0} (log: {1})" -f $p.ExitCode, $mspLog)
+    if ($p.ExitCode -eq 3010) { $Script:RebootNeeded = $true; return $true }
+    if ($p.ExitCode -eq 1642) {
+        Write-Log 'Patch target not found (1642) - installed product is a different track (e.g. Classic 2020); needs a manual upgrade.' 'WARN'
+        return $false
+    }
+    return ($p.ExitCode -eq 0)
+}
+
 function Invoke-AdobeAcrobatUpdate {
     $adobeApps = @(Get-InstalledApps | Where-Object { $_.DisplayName -match 'Adobe (Acrobat|Reader)' })
     if ($adobeApps.Count -eq 0) {
@@ -558,23 +619,84 @@ function Invoke-AdobeAcrobatUpdate {
         return
     }
     foreach ($a in $adobeApps) { Write-Log ("Found: {0} {1}" -f $a.DisplayName, $a.DisplayVersion) }
+
+    # Product trains: unified/classic Acrobat vs standalone Reader.
+    $trains = @()
+    $acro = @($adobeApps | Where-Object { $_.DisplayName -notmatch 'Reader' })
+    $rdr  = @($adobeApps | Where-Object { $_.DisplayName -match 'Reader' })
+    if ($acro.Count -gt 0) { $trains += @{ Name = 'Acrobat'; Apps = $acro; WingetId = 'Adobe.Acrobat.Pro';            MspPrefix = 'AcrobatDCUpd'; UrlPath = 'acrobat' } }
+    if ($rdr.Count  -gt 0) { $trains += @{ Name = 'Reader';  Apps = $rdr;  WingetId = 'Adobe.Acrobat.Reader.64-bit'; MspPrefix = 'AcroRdrDCUpd'; UrlPath = 'reader' } }
+
+    $latest = Get-AdobeLatestVersion
+    if ($latest) { Write-Log ("Latest Continuous-track build per Adobe release notes: {0}" -f $latest.Str) }
+
+    $trainVersion = {
+        param($apps)
+        $best = $null
+        foreach ($a in $apps) { try { $v = [Version]$a.DisplayVersion; if ((-not $best) -or ($v -gt $best)) { $best = $v } } catch { } }
+        $best
+    }
+
     $rum = @("${env:ProgramFiles(x86)}\Common Files\Adobe\ARM\1.0\RemoteUpdateManager.exe",
              "$env:ProgramFiles\Common Files\Adobe\ARM\1.0\RemoteUpdateManager.exe") |
            Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
-    if (-not $rum) {
-        Add-Attention 'Adobe Acrobat/Reader installed but RemoteUpdateManager.exe not found - patch via Endpoint Central Patch Mgmt or reinstall latest Acrobat.'
-        Set-ModuleStatus 'AdobeAcrobat' 'ATTENTION' 'RUM missing'
+    if (-not $rum) { Write-Log 'RemoteUpdateManager.exe not present (updater suppressed at install time) - will use winget/MSP fallback.' }
+
+    $needed = @()
+    foreach ($t in $trains) {
+        $cur = & $trainVersion $t.Apps
+        if ($latest -and $cur -and ($cur -ge $latest.Ver)) {
+            Write-Log ("{0} {1} is already the latest Continuous build." -f $t.Name, $cur)
+        } else {
+            $needed += $t
+        }
+    }
+    if ($needed.Count -eq 0) {
+        Set-ModuleStatus 'AdobeAcrobat' 'OK' 'already at latest Continuous build'
         return
     }
-    if ($AuditOnly) { Set-ModuleStatus 'AdobeAcrobat' 'WOULD-CHANGE' 'run RemoteUpdateManager'; return }
-    Write-Log ("Running Adobe RemoteUpdateManager: {0}" -f $rum)
-    $p = Start-Process -FilePath $rum -Wait -PassThru -WindowStyle Hidden
-    Write-Log ("RemoteUpdateManager exit code {0} (0 = success/nothing to do)." -f $p.ExitCode)
-    if ($p.ExitCode -eq 0) {
-        Set-ModuleStatus 'AdobeAcrobat' 'CHANGED' 'RUM run completed'
+    if ($AuditOnly) {
+        $detail = ($needed | ForEach-Object { '{0} {1}' -f $_.Name, (& $trainVersion $_.Apps) }) -join ', '
+        $via = if ($rum) { 'RUM' } else { 'winget/MSP fallback' }
+        Set-ModuleStatus 'AdobeAcrobat' 'WOULD-CHANGE' ("update {0} to {1} via {2}" -f $detail, $(if ($latest) { $latest.Str } else { 'latest' }), $via)
+        return
+    }
+
+    # Step 1: RUM (updates every installed track in one pass).
+    if ($rum) {
+        Write-Log ("Running Adobe RemoteUpdateManager: {0}" -f $rum)
+        $p = Start-Process -FilePath $rum -Wait -PassThru -WindowStyle Hidden
+        Write-Log ("RemoteUpdateManager exit code {0} (0 = success/nothing to do)." -f $p.ExitCode)
+    }
+
+    # Re-read versions; fall back per train that is still outdated.
+    $failed = @()
+    foreach ($t in $needed) {
+        $apps = @(Get-InstalledApps | Where-Object { $_.DisplayName -match 'Adobe (Acrobat|Reader)' })
+        $t.Apps = @($apps | Where-Object { if ($t.Name -eq 'Reader') { $_.DisplayName -match 'Reader' } else { $_.DisplayName -notmatch 'Reader' } })
+        $cur = & $trainVersion $t.Apps
+        if ($latest -and $cur -and ($cur -ge $latest.Ver)) {
+            Write-Log ("{0} updated to {1}." -f $t.Name, $cur)
+            continue
+        }
+        # Step 2: winget.
+        $w = Invoke-WingetUpgrade -Id $t.WingetId
+        if ($w) {
+            $cur2 = & $trainVersion (@(Get-InstalledApps | Where-Object { $_.DisplayName -match 'Adobe (Acrobat|Reader)' }))
+            if ((-not $latest) -or ($cur2 -and ($cur2 -ge $latest.Ver))) { Write-Log ("{0} handled via winget." -f $t.Name); continue }
+        }
+        # Step 3: direct MSP.
+        if (Install-AdobeMsp -Train $t -Latest $latest) {
+            Write-Log ("{0} patched via direct MSP." -f $t.Name)
+            continue
+        }
+        $failed += $t.Name
+    }
+    if ($failed.Count -gt 0) {
+        Add-Attention ("Adobe {0} could not be updated by RUM, winget or direct MSP - patch manually (product may be open/locked or on the Classic track). See {1}\adobe-*.log." -f ($failed -join ', '), $LogDir)
+        Set-ModuleStatus 'AdobeAcrobat' 'ATTENTION' ("update failed for: {0}" -f ($failed -join ', '))
     } else {
-        Add-Attention ("Adobe RUM returned {0} - check %TEMP%\AdobeARM.log / retry; updates may require Acrobat to be closed." -f $p.ExitCode)
-        Set-ModuleStatus 'AdobeAcrobat' 'ATTENTION' ("RUM exit {0}" -f $p.ExitCode)
+        Set-ModuleStatus 'AdobeAcrobat' 'CHANGED' 'updated to latest Continuous build'
     }
 }
 
@@ -839,8 +961,24 @@ function Invoke-InsightAgentCheck {
         Set-ModuleStatus 'InsightAgent' 'N/A' 'not installed'
         return
     }
-    $exe = @(Get-ChildItem -Path (Join-Path $env:ProgramFiles 'Rapid7\Insight Agent') -Filter 'ir_agent.exe' -Recurse -ErrorAction SilentlyContinue) | Select-Object -First 1
-    $ver = if ($exe) { $exe.VersionInfo.ProductVersion } else { 'unknown' }
+    $agentDir = Join-Path $env:ProgramFiles 'Rapid7\Insight Agent'
+    $exe = @(Get-ChildItem -Path $agentDir -Filter 'ir_agent.exe' -Recurse -ErrorAction SilentlyContinue) | Select-Object -First 1
+    $ver = $null
+    if ($exe) {
+        $ver = $exe.VersionInfo.ProductVersion
+        if ([string]::IsNullOrWhiteSpace($ver)) { $ver = $exe.VersionInfo.FileVersion }
+    }
+    if ([string]::IsNullOrWhiteSpace($ver)) {
+        # ir_agent.exe carries no version resource on some builds - the versioned
+        # component folder is authoritative.
+        $comp = Join-Path $agentDir 'components\insight_agent'
+        $dirs = @(Get-ChildItem -Path $comp -Directory -ErrorAction SilentlyContinue |
+                  Where-Object { $_.Name -match '^\d+(\.\d+)+$' })
+        if ($dirs.Count -gt 0) {
+            $ver = ($dirs | Sort-Object -Property @{ Expression = { [Version]$_.Name } } | Select-Object -Last 1).Name
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace($ver)) { $ver = 'unknown' }
     Write-Log ("Insight Agent version: {0}" -f $ver)
     if ($AuditOnly) { Set-ModuleStatus 'InsightAgent' 'OK' ("version {0} (audit)" -f $ver); return }
     Write-Log 'Restarting ir_agent so it checks in and self-updates from the Insight platform ...'
