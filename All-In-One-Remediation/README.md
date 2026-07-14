@@ -9,10 +9,18 @@ Every module first detects whether its product/setting exists, so the **same
 configuration is safe to push to every Windows asset** — machines simply skip
 what they don't have.
 
-> ### 🚫 Excluded by policy: AutoCAD
-> All 180 **AutoDesk AutoCAD / Advance Steel / Civil 3D** findings are
-> intentionally **not** touched. The script contains no Autodesk logic and will
-> never modify that software.
+> ### 🚫 Excluded by policy — the script never touches these
+> - **AutoCAD** — all 180 AutoDesk AutoCAD / Advance Steel / Civil 3D findings.
+> - **VNC** — "VNC remote control service installed" (10 assets).
+> - **Auto-logon** — "Windows autologin enabled" (8 assets).
+>
+> These findings will stay open in Rapid7 and are handled outside this script.
+>
+> ### 🔁 Never reboots
+> The script performs **no machine restart of any kind** — every installer runs
+> with `/norestart` and the Windows Update module only installs. Machines that
+> need a restart exit with code `3010`; **reboot them manually** (or via a
+> separate Endpoint Central reboot task) on your own schedule.
 
 ---
 
@@ -35,7 +43,6 @@ what they don't have.
 | SMBv2 signing not required (48) | `SmbSigning` | `RequireSecuritySignature=1` on the SMB server |
 | TLS/SSL family: BEAST, POODLE, SSLv3, TLS 1.0/1.1, 3DES/SWEET32, RC4, static-key ciphers, weak-MAC ciphers, "no strong ciphers" (up to 67) | `TlsHardening` | SChannel: SSL2/3 + TLS 1.0/1.1 off, TLS 1.2 on, weak ciphers off, MD5 off, DHE ≥ 2048, ECDHE/AEAD-only cipher-suite order, .NET strong-crypto keys |
 | CIFS account lockout allows brute forcing (52) | `LockoutPolicy` | Local policy: threshold 5, window 15 min, duration 15 min |
-| Windows autologin enabled (8) | `AutoLogon` | `AutoAdminLogon=0`, cleartext `DefaultPassword` deleted |
 | Rapid7 Insight Agent CVEs (2) | `InsightAgent` | Service bounce → agent self-updates from the Insight platform |
 | Oracle Java SE CPU findings (≤2 assets) | `Java` | `winget` upgrade of the JRE where available |
 | TeamViewer CVE-2025-41421 (1) | `TeamViewer` | `winget` upgrade where available |
@@ -48,7 +55,6 @@ what they don't have.
 | FortiClient — 5 CVEs, 1 asset | `FortiClient` | Fixed installers are only behind FortiCare/EMS login. Upgrade via EMS. |
 | Apache Log4j Core — 4 CVEs, 2 assets | `Log4j` | Jar is embedded in an application; script reports every `log4j-core-*.jar` / `log4j-1.*.jar` path found. App owner upgrades the bundled jar. |
 | ASP.NET Core **Obsolete Version** (13 assets) | `AspNetCore` | EOL 2.x–7.x runtimes have no patch; apps must move to .NET 8/10, then uninstall the old runtime. |
-| VNC remote control service (10 assets) | `Vnc` | May be sanctioned remote admin. Reported by default; rerun with **`-RemoveVNC`** to uninstall. |
 | SQL Server CVEs + Database Open Access | `SqlServer` | GDRs arrive via the `WindowsUpdate` module (Microsoft Update opt-in is done for you) — verify build after. Restrict TCP 1433 exposure via firewall. |
 | Java (when `winget` is unavailable) | `Java` | Oracle CPU installers need a licensed account; or migrate the app to Eclipse Temurin. |
 | "Inconclusive host with excessive port connection failures" | — | Scanner-side finding; nothing to fix on the endpoint. |
@@ -69,14 +75,12 @@ what they don't have.
 | `-NoDownload` | Never touch the internet; installer modules only use dependency files (see below). |
 | `-SkipWindowsUpdate` | Skip OS patching (use when Endpoint Central Patch Mgmt owns it, or to keep runs short). |
 | `-SkipTlsHardening` | Defer the SChannel changes (while validating legacy TLS 1.0/RSA-kx clients). |
-| `-KeepAutoLogon` | Don't touch auto-logon (kiosk/signage machines). |
-| `-RemoveVNC` | Uninstall detected VNC servers instead of only reporting them. |
-| `-RestartServices` | Restart LanmanServer immediately after the SMB signing change (default: waits for reboot). |
+| `-RestartServices` | Restart the LanmanServer **service** immediately after the SMB signing change (services only — the machine is never rebooted; default waits for your manual reboot). |
 | `-SkipModules A,B` | Skip any modules by name, e.g. `-SkipModules Chrome,Edge,VisualStudio`. |
 
-Module names: `CertPadding, SmbSigning, TlsHardening, LockoutPolicy, AutoLogon,
+Module names: `CertPadding, SmbSigning, TlsHardening, LockoutPolicy,
 InsightAgent, StoreApps, Chrome, Edge, AdobeAcrobat, Office, AspNetCore,
-SevenZip, Java, TeamViewer, MariaDb, FortiClient, Log4j, Vnc, SqlServer,
+SevenZip, Java, TeamViewer, MariaDb, FortiClient, Log4j, SqlServer,
 VisualStudio, WindowsUpdate`
 
 ### Exit codes — set **Specify the exit code(s)** to `0,3010`
@@ -84,7 +88,7 @@ VisualStudio, WindowsUpdate`
 | Exit code | Meaning | Action |
 |---|---|---|
 | `0` | Compliant / everything remediated | None |
-| `3010` | Remediated — **reboot required** (TLS/SMB/OS updates) | Schedule reboot |
+| `3010` | Remediated — **reboot required** (TLS/SMB/OS updates). The script never reboots. | Reboot manually when convenient |
 | `2` | Attention — manual follow-up items in the log | Read `C:\ProgramData\Rapid7Remediation\remediation.log` |
 | `1` | At least one module failed (download/signature/install) | Read the log, fix, redeploy (retries are safe — everything is idempotent) |
 
@@ -104,7 +108,7 @@ VisualStudio, WindowsUpdate`
 | Form field | Value |
 |---|---|
 | **Name** | `Rapid7 - All-In-One Vulnerability Remediation (Jun 2026)` |
-| **Description** | `Remediates the June 2026 Rapid7 export: browser/Adobe/Office/7-Zip/VS/ASP.NET Core updates, TLS-SSL + SMB + lockout + autologon + CVE-2013-3900 hardening, Windows Updates. AutoCAD excluded. Logs to C:\ProgramData\Rapid7Remediation\.` |
+| **Description** | `Remediates the June 2026 Rapid7 export: browser/Adobe/Office/7-Zip/VS/ASP.NET Core updates, TLS-SSL + SMB + lockout + CVE-2013-3900 hardening, Windows Updates. AutoCAD/VNC/autologon excluded. Never reboots (3010 = manual reboot pending). Logs to C:\ProgramData\Rapid7Remediation\.` |
 | **Execute Script from** | **Repository** |
 | **Script Name** | `Invoke-Rapid7Remediation.ps1` |
 | **Script Argument(s)** | *(blank)* for full run — variants below |
@@ -133,7 +137,8 @@ group is also fine.
 - On the endpoint: `C:\ProgramData\Rapid7Remediation\remediation.log` — ends
   with a per-module summary table (`OK / CHANGED / ATTENTION / FAILED / N.A.`)
   plus the list of manual follow-up items.
-- Reboot the `3010` machines, then trigger a Rapid7 rescan of the group.
+- Manually reboot the `3010` machines when convenient (the script leaves the
+  restart entirely to you), then trigger a Rapid7 rescan of the group.
 
 ---
 
@@ -142,19 +147,18 @@ group is also fine.
 1. **Pilot audit:** push with `-AuditOnly` (success code `0` only) to ~5
    machines — zero changes, full inventory of what the real run would do.
 2. **Pilot remediation:** full run on a handful of non-critical machines.
-   Watch the two riskiest changes:
+   Watch the one genuinely risky change:
    - **TLS hardening** disables TLS 1.0/1.1, RSA-key-exchange and SHA-1/CBC-era
      suites — anything *very* old (2003/XP-era clients, ancient printers or
      appliances talking to that server, apps hard-coded to TLS 1.0) will stop
      connecting. Pilot on servers carefully; use `-SkipTlsHardening` to defer,
      then remove the switch once validated. Windows 8.1/2012 R2 gets suffixed
      ECDHE suites so RDP keeps working.
-   - **Auto-logon removal** will stop kiosk/signage machines from signing in
-     automatically — push those with `-KeepAutoLogon` and fix them properly
-     later (e.g. Autologon tool with LSA-protected credentials + Sysinternals).
-3. **Broad rollout** in a maintenance window (reboots pending afterwards).
-4. Reboot, rescan in Rapid7, then work the exit-`2` machines' logs — those
-   carry the MariaDB / FortiClient / Log4j / EOL-runtime / VNC follow-ups.
+3. **Broad rollout.** No maintenance window strictly required — nothing
+   reboots on its own; changes that need a restart simply stay pending.
+4. **Manually reboot** the exit-`3010` machines on your schedule, rescan in
+   Rapid7, then work the exit-`2` machines' logs — those carry the MariaDB /
+   FortiClient / Log4j / EOL-runtime follow-ups.
 
 ### Known caveats
 

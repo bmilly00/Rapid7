@@ -9,8 +9,16 @@
     machine and only acts when needed, so the same script is safe to deploy
     to every Windows asset in the export.
 
-    EXCLUDED BY POLICY: AutoDesk AutoCAD (all 180 findings). This script never
-    touches AutoCAD, Advance Steel, Civil 3D or any Autodesk component.
+    EXCLUDED BY POLICY - this script never touches:
+      * AutoDesk AutoCAD / Advance Steel / Civil 3D (all 180 findings)
+      * VNC servers ("VNC remote control service installed", 10 assets)
+      * Windows auto-logon ("Windows autologin enabled", 8 assets)
+    Those Rapid7 findings will remain open and are handled outside this script.
+
+    NEVER REBOOTS: this script performs no machine restart of any kind. Every
+    installer runs with /norestart and the Windows Update module only installs.
+    When a change needs a restart the script exits 3010 and leaves the reboot
+    to you (manual / separate UEM reboot task).
 
     What each module remediates (Rapid7 finding groups in parentheses):
 
@@ -26,52 +34,47 @@
                           order + .NET strong-crypto keys.
       4  LockoutPolicy    "CIFS Account Lockout Policy Allows Password Brute
                           Forcing" (52 assets) - local lockout 5/15/15.
-      5  AutoLogon        "Windows autologin enabled" (8 assets) - disables
-                          AutoAdminLogon and deletes the cleartext password.
-      6  Chrome           All 1195 Google Chrome CVEs - installs the latest
+      5  Chrome           All 1195 Google Chrome CVEs - installs the latest
                           Chrome Enterprise MSI (evergreen link, Google
                           Authenticode verified).
-      7  Edge             All 449 Microsoft Edge CVEs - installs the latest
+      6  Edge             All 449 Microsoft Edge CVEs - installs the latest
                           Edge Stable MSI (Microsoft evergreen link, verified);
                           falls back to kicking the built-in updater.
-      8  AdobeAcrobat     All 397 Adobe Acrobat/Reader CVEs - runs Adobe
+      7  AdobeAcrobat     All 397 Adobe Acrobat/Reader CVEs - runs Adobe
                           RemoteUpdateManager (RUM) to apply the newest patch.
-      9  Office           All 93 Microsoft Office CVEs - triggers a
+      8  Office           All 93 Microsoft Office CVEs - triggers a
                           Click-to-Run update to the latest build.
-      10 AspNetCore       ASP.NET Core CVEs incl. CVE-2025-55315 / the 2026
+      9  AspNetCore       ASP.NET Core CVEs incl. CVE-2025-55315 / the 2026
                           DoS-EoP set (32 assets) - upgrades in-support 8.0/
                           9.0/10.0 Hosting Bundles to the newest build;
                           reports EOL 2.x-7.x ("Obsolete Version", 13 assets).
-      11 SevenZip         All 7-Zip CVEs (10 assets) - winget upgrade, or
+      10 SevenZip         All 7-Zip CVEs (10 assets) - winget upgrade, or
                           downloads the newest x64 build from 7-zip.org.
-      12 VisualStudio     All 9 Visual Studio CVEs - vs_installer updateall.
-      13 StoreApps        Microsoft Notepad CVE-2026-20841 and other Store app
+      11 VisualStudio     All 9 Visual Studio CVEs - vs_installer updateall.
+      12 StoreApps        Microsoft Notepad CVE-2026-20841 and other Store app
                           findings - forces a Store app update scan.
-      14 Java             Oracle Java SE CPU findings (2 assets) - winget
+      13 Java             Oracle Java SE CPU findings (2 assets) - winget
                           upgrade when possible, otherwise reported.
-      15 TeamViewer       TeamViewer CVE-2025-41421 - winget upgrade when
+      14 TeamViewer       TeamViewer CVE-2025-41421 - winget upgrade when
                           possible, otherwise reported.
-      16 InsightAgent     Rapid7 Insight Agent CVEs (2 assets) - bounces the
+      15 InsightAgent     Rapid7 Insight Agent CVEs (2 assets) - bounces the
                           agent service so it self-updates; reports version.
-      17 WindowsUpdate    All 327 "Microsoft Windows" CVEs, .NET Framework
+      16 WindowsUpdate    All 327 "Microsoft Windows" CVEs, .NET Framework
                           CVEs, SQL Server GDRs, Defender etc. - opts the box
                           into Microsoft Update and installs every applicable
                           software update via the Windows Update Agent API.
                           Runs LAST because it is the slowest.
 
       DETECT + REPORT ONLY (exit code 2 so the machine shows as needs-attention)
-      18 MariaDb          11 MariaDB CVEs (2 assets) - unattended in-place
+      17 MariaDb          11 MariaDB CVEs (2 assets) - unattended in-place
                           upgrade of a production DB engine is not safe from a
                           blind script; reports installed version + guidance.
-      19 FortiClient      5 FortiClient CVEs (1 asset) - fixed installers are
+      18 FortiClient      5 FortiClient CVEs (1 asset) - fixed installers are
                           only available signed-in via FortiCare/EMS.
-      20 Log4j            4 Apache Log4j Core CVEs (2 assets) - the jar is
+      19 Log4j            4 Apache Log4j Core CVEs (2 assets) - the jar is
                           embedded in an application; reports every log4j jar
                           found so the app owner can upgrade it.
-      21 Vnc              "VNC remote control service installed" (10 assets) -
-                          may be sanctioned remote admin; reports it, or
-                          uninstalls when run with -RemoveVNC.
-      22 SqlServer        SQL Server RCE/EoP CVEs + "Database Open Access" -
+      20 SqlServer        SQL Server RCE/EoP CVEs + "Database Open Access" -
                           GDRs arrive via the WindowsUpdate module once
                           Microsoft Update is opted in; reports instance +
                           exposure guidance.
@@ -100,16 +103,11 @@
     Skip module 3 (e.g. while validating that no legacy client depends on
     TLS 1.0/1.1 or RSA-key-exchange cipher suites against this server).
 
-.PARAMETER KeepAutoLogon
-    Skip module 5 (kiosk / signage machines that must keep auto-logon).
-
-.PARAMETER RemoveVNC
-    Module 21 uninstalls detected VNC servers instead of only reporting them.
-
 .PARAMETER RestartServices
-    Allow immediate service restarts where a change needs one (LanmanServer
-    after the SMB-signing change). Default is to leave services alone and let
-    the change activate at the next reboot.
+    Allow immediate SERVICE restarts where a change needs one (LanmanServer
+    after the SMB-signing change). Services only - never the machine. Default
+    is to leave services alone and let the change activate at the next
+    (manual) reboot.
 
 .PARAMETER SkipModules
     Names of modules to skip, e.g. -SkipModules Chrome,Edge
@@ -117,7 +115,8 @@
 .NOTES
     Exit codes (set "Specify the exit code(s)" to 0,3010 in Endpoint Central):
         0    = compliant / everything remediated, no reboot needed
-        3010 = remediated, reboot required to finish (TLS/SMB/updates)
+        3010 = remediated, reboot required to finish (TLS/SMB/updates) - the
+               script itself never reboots; schedule the restart manually
         2    = attention required - read the log (report-only findings, EOL
                software, or -AuditOnly found gaps)
         1    = at least one module failed (download/signature/install error)
@@ -134,8 +133,6 @@ param(
     [switch]$NoDownload,
     [switch]$SkipWindowsUpdate,
     [switch]$SkipTlsHardening,
-    [switch]$KeepAutoLogon,
-    [switch]$RemoveVNC,
     [switch]$RestartServices,
     [string[]]$SkipModules = @()
 )
@@ -149,8 +146,6 @@ if ($env:PROCESSOR_ARCHITEW6432 -and -not $env:R7REM_RELAUNCHED) {
     if ($NoDownload)        { $argList += '-NoDownload' }
     if ($SkipWindowsUpdate) { $argList += '-SkipWindowsUpdate' }
     if ($SkipTlsHardening)  { $argList += '-SkipTlsHardening' }
-    if ($KeepAutoLogon)     { $argList += '-KeepAutoLogon' }
-    if ($RemoveVNC)         { $argList += '-RemoveVNC' }
     if ($RestartServices)   { $argList += '-RestartServices' }
     if ($SkipModules.Count) { $argList += '-SkipModules'; $argList += ($SkipModules -join ',') }
     $proc = Start-Process -FilePath $ps64 -ArgumentList $argList -Wait -PassThru -WindowStyle Hidden
@@ -471,37 +466,7 @@ function Invoke-LockoutPolicyFix {
 }
 
 # ==============================================================================
-# 5. Windows autologon
-# ==============================================================================
-function Invoke-AutoLogonFix {
-    if ($KeepAutoLogon) {
-        Write-Log 'Skipped via -KeepAutoLogon.'
-        Set-ModuleStatus 'AutoLogon' 'SKIPPED' 'via -KeepAutoLogon'
-        return
-    }
-    $key = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
-    $props = Get-ItemProperty -Path $key -ErrorAction SilentlyContinue
-    $enabled = ($props.AutoAdminLogon -eq '1') -or ($props.AutoAdminLogon -eq 1)
-    $hasPwd  = $null -ne $props.DefaultPassword
-    if (-not $enabled -and -not $hasPwd) {
-        Write-Log 'Auto-logon not enabled and no cleartext DefaultPassword present.'
-        Set-ModuleStatus 'AutoLogon' 'OK' 'not enabled'
-        return
-    }
-    if ($AuditOnly) { Set-ModuleStatus 'AutoLogon' 'WOULD-CHANGE' 'disable auto-logon, remove DefaultPassword'; return }
-    Set-RegValue -Path $key -Name 'AutoAdminLogon' -Value '0' -Type 'String'
-    foreach ($v in 'DefaultPassword', 'AutoLogonCount') {
-        if ($null -ne (Get-ItemProperty -Path $key -Name $v -ErrorAction SilentlyContinue)) {
-            Remove-ItemProperty -Path $key -Name $v -ErrorAction SilentlyContinue
-            Write-Log ("Removed Winlogon\{0}." -f $v)
-        }
-    }
-    Write-Log 'NOTE: if auto-logon was configured via Sysinternals Autologon/netplwiz, an LSA secret may remain; rerun that tool to clear it if Rapid7 still flags the asset.'
-    Set-ModuleStatus 'AutoLogon' 'CHANGED' 'auto-logon disabled, cleartext password removed'
-}
-
-# ==============================================================================
-# 6. Google Chrome
+# 5. Google Chrome
 # ==============================================================================
 function Invoke-ChromeUpdate {
     $exe = @("$env:ProgramFiles\Google\Chrome\Application\chrome.exe",
@@ -534,7 +499,7 @@ function Invoke-ChromeUpdate {
 }
 
 # ==============================================================================
-# 7. Microsoft Edge
+# 6. Microsoft Edge
 # ==============================================================================
 function Invoke-EdgeUpdate {
     $exe = @("${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe",
@@ -583,7 +548,7 @@ function Invoke-EdgeUpdate {
 }
 
 # ==============================================================================
-# 8. Adobe Acrobat / Reader
+# 7. Adobe Acrobat / Reader
 # ==============================================================================
 function Invoke-AdobeAcrobatUpdate {
     $adobeApps = @(Get-InstalledApps | Where-Object { $_.DisplayName -match 'Adobe (Acrobat|Reader)' })
@@ -614,7 +579,7 @@ function Invoke-AdobeAcrobatUpdate {
 }
 
 # ==============================================================================
-# 9. Microsoft Office (Click-to-Run)
+# 8. Microsoft Office (Click-to-Run)
 # ==============================================================================
 function Invoke-OfficeC2RUpdate {
     $cfg = 'HKLM:\SOFTWARE\Microsoft\Office\ClickToRun\Configuration'
@@ -642,7 +607,7 @@ function Invoke-OfficeC2RUpdate {
 }
 
 # ==============================================================================
-# 10. ASP.NET Core runtimes (incl. CVE-2025-55315 + 2026 CVE set)
+# 9. ASP.NET Core runtimes (incl. CVE-2025-55315 + 2026 CVE set)
 # ==============================================================================
 function Invoke-AspNetCoreUpdate {
     $roots = @()
@@ -705,7 +670,7 @@ function Invoke-AspNetCoreUpdate {
 }
 
 # ==============================================================================
-# 11. 7-Zip
+# 10. 7-Zip
 # ==============================================================================
 function Invoke-SevenZipUpdate {
     $apps = @(Get-InstalledApps | Where-Object { $_.DisplayName -like '7-Zip*' })
@@ -770,7 +735,7 @@ function Invoke-SevenZipUpdate {
 }
 
 # ==============================================================================
-# 12. Visual Studio
+# 11. Visual Studio
 # ==============================================================================
 function Invoke-VisualStudioUpdate {
     $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
@@ -804,7 +769,7 @@ function Invoke-VisualStudioUpdate {
 }
 
 # ==============================================================================
-# 13. Store apps (Notepad CVE-2026-20841 etc.)
+# 12. Store apps (Notepad CVE-2026-20841 etc.)
 # ==============================================================================
 function Invoke-StoreAppsUpdate {
     if ($AuditOnly) { Set-ModuleStatus 'StoreApps' 'WOULD-CHANGE' 'trigger Store update scan'; return }
@@ -820,7 +785,7 @@ function Invoke-StoreAppsUpdate {
 }
 
 # ==============================================================================
-# 14. Oracle Java
+# 13. Oracle Java
 # ==============================================================================
 function Invoke-JavaCheck {
     $java = @(Get-InstalledApps | Where-Object { $_.DisplayName -match '^(Java \d|Java\(TM\)|Oracle Java|Java SE Development Kit|JDK)' })
@@ -845,7 +810,7 @@ function Invoke-JavaCheck {
 }
 
 # ==============================================================================
-# 15. TeamViewer
+# 14. TeamViewer
 # ==============================================================================
 function Invoke-TeamViewerUpdate {
     $tv = @(Get-InstalledApps | Where-Object { $_.DisplayName -like 'TeamViewer*' })
@@ -865,7 +830,7 @@ function Invoke-TeamViewerUpdate {
 }
 
 # ==============================================================================
-# 16. Rapid7 Insight Agent
+# 15. Rapid7 Insight Agent
 # ==============================================================================
 function Invoke-InsightAgentCheck {
     $svc = Get-Service -Name 'ir_agent' -ErrorAction SilentlyContinue
@@ -885,7 +850,7 @@ function Invoke-InsightAgentCheck {
 }
 
 # ==============================================================================
-# 17. Windows Update (Windows / .NET Framework / SQL GDR / Defender)
+# 16. Windows Update (Windows / .NET Framework / SQL GDR / Defender)
 # ==============================================================================
 function Invoke-WindowsUpdateModule {
     if ($SkipWindowsUpdate) {
@@ -954,7 +919,7 @@ function Invoke-WindowsUpdateModule {
 }
 
 # ==============================================================================
-# 18. MariaDB (report only)
+# 17. MariaDB (report only)
 # ==============================================================================
 function Invoke-MariaDbCheck {
     $maria = @(Get-InstalledApps | Where-Object { $_.DisplayName -like 'MariaDB*' })
@@ -972,7 +937,7 @@ function Invoke-MariaDbCheck {
 }
 
 # ==============================================================================
-# 19. Fortinet FortiClient (report only)
+# 18. Fortinet FortiClient (report only)
 # ==============================================================================
 function Invoke-FortiClientCheck {
     $fc = @(Get-InstalledApps | Where-Object { $_.DisplayName -like 'FortiClient*' })
@@ -987,7 +952,7 @@ function Invoke-FortiClientCheck {
 }
 
 # ==============================================================================
-# 20. Apache Log4j Core (report only)
+# 19. Apache Log4j Core (report only)
 # ==============================================================================
 function Invoke-Log4jScan {
     $scanRoots = @($env:ProgramFiles, ${env:ProgramFiles(x86)}, $env:ProgramData, 'C:\inetpub') |
@@ -1008,45 +973,7 @@ function Invoke-Log4jScan {
 }
 
 # ==============================================================================
-# 21. VNC remote control service
-# ==============================================================================
-function Invoke-VncCheck {
-    $vncSvcNames = 'tvnserver', 'uvnc_service', 'vncserver', 'winvnc', 'RealVNC'
-    $svcs = @(Get-CimInstance -ClassName Win32_Service -ErrorAction SilentlyContinue |
-              Where-Object { ($vncSvcNames -contains $_.Name) -or ($_.DisplayName -match 'VNC') })
-    $apps = @(Get-InstalledApps | Where-Object { $_.DisplayName -match 'VNC' })
-    if (($svcs.Count -eq 0) -and ($apps.Count -eq 0)) {
-        Write-Log 'No VNC server detected.'
-        Set-ModuleStatus 'Vnc' 'OK' 'not present'
-        return
-    }
-    foreach ($s in $svcs) { Write-Log ("VNC service: {0} ({1})" -f $s.Name, $s.State) }
-    foreach ($a in $apps) { Write-Log ("VNC app: {0} {1}" -f $a.DisplayName, $a.DisplayVersion) }
-    if (-not $RemoveVNC) {
-        Add-Attention 'VNC remote control service installed - if unsanctioned, rerun with -RemoveVNC to uninstall it (or remove manually); if sanctioned, document the exception in Rapid7.'
-        Set-ModuleStatus 'Vnc' 'ATTENTION' 'present (report-only; use -RemoveVNC to uninstall)'
-        return
-    }
-    if ($AuditOnly) { Set-ModuleStatus 'Vnc' 'WOULD-CHANGE' 'uninstall VNC'; return }
-    $removed = 0
-    foreach ($a in $apps) {
-        $cmd = if ($a.QuietUninstallString) { $a.QuietUninstallString } else { $a.UninstallString }
-        if (-not $cmd) { continue }
-        if ($cmd -notmatch '(?i)msiexec' -and $cmd -notmatch '(?i)/S|/silent|/quiet|/qn') { $cmd = "$cmd /S" }
-        if ($cmd -match '(?i)msiexec' -and $cmd -notmatch '(?i)/qn') { $cmd = ($cmd -replace '(?i)/I', '/X') + ' /qn /norestart' }
-        Write-Log ("Uninstalling {0}: {1}" -f $a.DisplayName, $cmd)
-        try {
-            $p = Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', $cmd -Wait -PassThru -WindowStyle Hidden
-            Write-Log ("Uninstall exit code {0}" -f $p.ExitCode)
-            if ($p.ExitCode -in 0, 3010, 1605) { $removed++ }
-            if ($p.ExitCode -eq 3010) { $Script:RebootNeeded = $true }
-        } catch { Write-Log ("Uninstall failed: {0}" -f $_.Exception.Message) 'ERROR' }
-    }
-    Set-ModuleStatus 'Vnc' 'CHANGED' ("{0} VNC product(s) uninstalled" -f $removed)
-}
-
-# ==============================================================================
-# 22. SQL Server exposure note
+# 20. SQL Server exposure note
 # ==============================================================================
 function Invoke-SqlServerCheck {
     $sql = @(Get-CimInstance -ClassName Win32_Service -ErrorAction SilentlyContinue |
@@ -1068,10 +995,11 @@ $exitCode = 0
 try {
     Write-Log '======================================================================'
     Write-Log ("Rapid7 all-in-one remediation starting on {0}" -f $env:COMPUTERNAME)
-    Write-Log ("Options: AuditOnly={0} NoDownload={1} SkipWindowsUpdate={2} SkipTlsHardening={3} KeepAutoLogon={4} RemoveVNC={5} RestartServices={6} SkipModules=[{7}]" -f `
+    Write-Log ("Options: AuditOnly={0} NoDownload={1} SkipWindowsUpdate={2} SkipTlsHardening={3} RestartServices={4} SkipModules=[{5}]" -f `
         [bool]$AuditOnly, [bool]$NoDownload, [bool]$SkipWindowsUpdate, [bool]$SkipTlsHardening,
-        [bool]$KeepAutoLogon, [bool]$RemoveVNC, [bool]$RestartServices, ($SkipModules -join ','))
-    Write-Log 'POLICY: AutoDesk AutoCAD findings are intentionally EXCLUDED - no Autodesk software is touched by this script.'
+        [bool]$RestartServices, ($SkipModules -join ','))
+    Write-Log 'POLICY: AutoCAD, VNC and Windows auto-logon findings are intentionally EXCLUDED - this script does not touch them.'
+    Write-Log 'POLICY: this script NEVER reboots the machine - exit code 3010 means a manual reboot is still needed.'
 
     $isAdmin = $false
     try {
@@ -1088,7 +1016,6 @@ try {
     Invoke-Module 'SmbSigning'    { Invoke-SmbSigningFix }
     Invoke-Module 'TlsHardening'  { Invoke-TlsHardening }
     Invoke-Module 'LockoutPolicy' { Invoke-LockoutPolicyFix }
-    Invoke-Module 'AutoLogon'     { Invoke-AutoLogonFix }
     Invoke-Module 'InsightAgent'  { Invoke-InsightAgentCheck }
     Invoke-Module 'StoreApps'     { Invoke-StoreAppsUpdate }
     Invoke-Module 'Chrome'        { Invoke-ChromeUpdate }
@@ -1102,7 +1029,6 @@ try {
     Invoke-Module 'MariaDb'       { Invoke-MariaDbCheck }
     Invoke-Module 'FortiClient'   { Invoke-FortiClientCheck }
     Invoke-Module 'Log4j'         { Invoke-Log4jScan }
-    Invoke-Module 'Vnc'           { Invoke-VncCheck }
     Invoke-Module 'SqlServer'     { Invoke-SqlServerCheck }
     Invoke-Module 'VisualStudio'  { Invoke-VisualStudioUpdate }
     Invoke-Module 'WindowsUpdate' { Invoke-WindowsUpdateModule }
@@ -1126,6 +1052,9 @@ try {
 
     if ($Script:Attention.Count -gt 0) {
         Write-Log ("Items needing manual follow-up: {0}" -f $Script:Attention.Count)
+    }
+    if ($Script:RebootNeeded) {
+        Write-Log 'A reboot is required to finish applying changes. This script does NOT reboot - schedule it manually.' 'WARN'
     }
     $resultText = switch ($exitCode) {
         0     { 'COMPLIANT / REMEDIATED' }
